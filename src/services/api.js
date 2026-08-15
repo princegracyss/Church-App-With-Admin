@@ -201,9 +201,10 @@ export const api = {
     return unwrap(await supabase.from('members').select('*').eq('id', memberId).single());
   },
 
-  async getMembers({ query: search, familyId } = {}) {
+  async getMembers({ query: search, familyId, bccUnit } = {}) {
     let q = supabase.from('members').select('*').order('first_name');
     if (familyId) q = q.eq('family_id', familyId);
+    if (bccUnit)  q = q.eq('basic_christian_community', bccUnit);
     if (search) {
       const s = search.trim();
       q = q.or(`first_name.ilike.%${s}%,last_name.ilike.%${s}%,member_number.ilike.%${s}%,mobile.ilike.%${s}%`);

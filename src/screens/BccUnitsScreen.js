@@ -126,7 +126,7 @@ export default function BccUnitsScreen({ route, navigation }) {
         renderItem={({ item: unit }) => (
           <TouchableOpacity
             style={styles.unitRow}
-            onPress={() => navigation.navigate('BccFamilies', { bccName: unit.name, wardName })}
+            onPress={() => navigation.navigate('MemberList', { bccUnit: unit.name })}
           >
             <View style={[styles.unitIconWrap, { backgroundColor: t.primaryLight }]}>
               <Ionicons name="people-circle-outline" size={20} color={t.primary} />
@@ -135,6 +135,14 @@ export default function BccUnitsScreen({ route, navigation }) {
               <Text style={styles.unitName}>{unit.name}</Text>
               {!!unit.description && <Text style={styles.unitSub}>{unit.description}</Text>}
             </View>
+            {/* Families sub-view */}
+            <TouchableOpacity
+              hitSlop={10}
+              style={styles.iconBtn}
+              onPress={() => navigation.navigate('BccFamilies', { bccName: unit.name, wardName })}
+            >
+              <Ionicons name="home-outline" size={17} color={t.primary} />
+            </TouchableOpacity>
             <TouchableOpacity
               hitSlop={10}
               style={styles.iconBtn}

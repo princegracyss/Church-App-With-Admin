@@ -7,13 +7,14 @@ import ScreenHeader from '../components/ScreenHeader';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
-export default function MemberListScreen({ navigation }) {
+export default function MemberListScreen({ navigation, route }) {
   const { isAdmin } = useAuth();
   const t = useTheme();
+  const bccUnit = route.params?.bccUnit ?? null;   // set when drilled from BCC Wards
   const [query, setQuery] = useState('');
   const [list, setList] = useState([]);
 
-  const load = useCallback((q) => api.getMembers({ query: q }).then(setList), []);
+  const load = useCallback((q) => api.getMembers({ query: q, bccUnit }).then(setList), [bccUnit]);
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => load(query));
     return unsubscribe;
@@ -39,7 +40,7 @@ export default function MemberListScreen({ navigation }) {
 
   return (
     <View style={styles.flex}>
-      <ScreenHeader title="Member List" navigation={navigation} />
+      <ScreenHeader title={bccUnit ? bccUnit : 'Member List'} navigation={navigation} />
       <View style={styles.searchWrap}>
         <Ionicons name="search" size={18} color={colors.inkSoft} />
         <TextInput
