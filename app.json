@@ -27,7 +27,7 @@
     "extra": {
       "apiBaseUrl": "https://api.yourparish.org/v1",
       "eas": {
-        "projectId": "c066efd2-8512-4f36-b606-4be96d46e564"
+        "projectId": "5beddc1c-267d-48f2-8d2e-89938736a954"
       }
     },
     "plugins": [
