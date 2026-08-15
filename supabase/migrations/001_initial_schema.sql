@@ -1,0 +1,9 @@
+-- ============================================================
+-- Migration 001 — Initial schema
+-- Run once when setting up a fresh Supabase project.
+-- This is the full baseline schema (everything in schema.sql
+-- up to and including the BCC units + member number sequence).
+-- ============================================================
+-- For a fresh project, run the full supabase/schema.sql instead.
+-- This file exists as a marker so the migration history is clear.
+-- Applied: project creation

@@ -1,0 +1,8 @@
+# Dependencies
+node_modules/
+
+# Expo files
+.expo/
+
+# Lock files (Optional but requested)
+package-lock.json

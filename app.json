@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "Parish Connect",
+    "slug": "parish-connect",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#6B1E3C"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "org.parish.connect"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#6B1E3C"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "org.parish.connect"
+    },
+    "extra": {
+      "apiBaseUrl": "https://api.yourparish.org/v1",
+      "eas": {
+        "projectId": "c066efd2-8512-4f36-b606-4be96d46e564"
+      }
+    },
+    "plugins": [
+      "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#6B1E3C",
+          "defaultChannel": "parish-default"
+        }
+      ]
+    ]
+  }
+}
