@@ -1,45 +1,52 @@
 {
-  "expo": {
-    "name": "Parish Connect",
-    "slug": "parish-connect",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "splash": {
+  "name": "Parish Connect",
+  "slug": "church-management",
+  "version": "1.0.0",
+  "orientation": "portrait",
+  "icon": "./assets/icon.png",
+  "userInterfaceStyle": "light",
+  "splash": {
+    "backgroundColor": "#6B1E3C"
+  },
+  "assetBundlePatterns": [
+    "**/*"
+  ],
+  "newArchEnabled": true,
+  "ios": {
+    "supportsTablet": true,
+    "bundleIdentifier": "org.parish.connect"
+  },
+  "android": {
+    "adaptiveIcon": {
       "backgroundColor": "#6B1E3C"
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
-    "newArchEnabled": true,
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "org.parish.connect"
-    },
-    "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#6B1E3C"
-      },
-      "edgeToEdgeEnabled": true,
-      "package": "org.parish.connect"
-    },
-    "extra": {
-      "apiBaseUrl": "https://api.yourparish.org/v1",
-      "eas": {
-        "projectId": "5beddc1c-267d-48f2-8d2e-89938736a954"
-      }
-    },
-    "plugins": [
-      "expo-audio",
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/icon.png",
-          "color": "#6B1E3C",
-          "defaultChannel": "parish-default"
-        }
-      ]
+    "edgeToEdgeEnabled": true,
+    "package": "org.parish.connect",
+    "permissions": [
+      "android.permission.RECORD_AUDIO",
+      "android.permission.MODIFY_AUDIO_SETTINGS"
     ]
-  }
+  },
+  "extra": {
+    "apiBaseUrl": "https://api.yourparish.org/v1",
+    "eas": {
+      "projectId": "5beddc1c-267d-48f2-8d2e-89938736a954"
+    }
+  },
+  "plugins": [
+    "expo-audio",
+    [
+      "expo-notifications",
+      {
+        "icon": "./assets/icon.png",
+        "color": "#6B1E3C",
+        "defaultChannel": "parish-default"
+      }
+    ]
+  ],
+  "sdkVersion": "54.0.0",
+  "platforms": [
+    "ios",
+    "android"
+  ]
 }
