@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, radius } from '../theme/theme';
 import { useTheme } from '../context/ParishContext';
@@ -13,12 +13,34 @@ export default function MemberListScreen({ navigation, route }) {
   const bccUnit = route.params?.bccUnit ?? null;   // set when drilled from BCC Wards
   const [query, setQuery] = useState('');
   const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
 
-  const load = useCallback((q) => api.getMembers({ query: q, bccUnit }).then(setList), [bccUnit]);
+  const load = useCallback((q) => {
+    setLoading(true);
+    setLoadError(null);
+    return api.getMembers({ query: q, bccUnit })
+      .then(setList)
+      .catch((e) => setLoadError(e.message ?? 'Failed to load members.'))
+      .finally(() => setLoading(false));
+  }, [bccUnit]);
+
+  // Reset search query and reload whenever the BCC unit filter changes
+  // (e.g. navigating from one unit's member list to another, or on first mount).
   useEffect(() => {
-    const unsubscribe = navigation.addListener('focus', () => load(query));
+    setQuery('');
+    load('');
+  }, [bccUnit]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reload on screen focus (e.g. returning from MemberProfile after an edit).
+  // Uses a ref so the listener always reads the latest query without
+  // re-registering the listener on every keystroke.
+  const queryRef = useRef(query);
+  useEffect(() => { queryRef.current = query; }, [query]);
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => load(queryRef.current));
     return unsubscribe;
-  }, [navigation, load, query]);
+  }, [navigation, load]);
 
   const confirmDelete = (member) => {
     Alert.alert(
@@ -48,13 +70,15 @@ export default function MemberListScreen({ navigation, route }) {
           placeholder="Search by name or member number"
           placeholderTextColor={colors.inkSoft}
           value={query}
-          onChangeText={(t) => { setQuery(t); load(t); }}
+          onChangeText={(text) => { setQuery(text); load(text); }}
         />
       </View>
       <FlatList
         data={list}
         keyExtractor={(m) => m.id}
         contentContainerStyle={{ padding: 16, paddingBottom: 90 }}
+        refreshing={loading}
+        onRefresh={() => load(query)}
         renderItem={({ item }) => (
           <TouchableOpacity
             style={[styles.row, item.status === 'inactive' && styles.rowInactive]}
@@ -79,9 +103,15 @@ export default function MemberListScreen({ navigation, route }) {
           </TouchableOpacity>
         )}
         ListEmptyComponent={
-          <Text style={styles.empty}>
-            {query.trim() ? 'No members match your search.' : 'No members found.'}
-          </Text>
+          loading ? (
+            <ActivityIndicator style={{ marginTop: 40 }} color={t.primary} />
+          ) : loadError ? (
+            <Text style={styles.empty}>{loadError}</Text>
+          ) : (
+            <Text style={styles.empty}>
+              {query.trim() ? 'No members match your search.' : 'No members found.'}
+            </Text>
+          )
         }
       />
       {isAdmin && (

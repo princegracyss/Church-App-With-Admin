@@ -57,11 +57,13 @@ export default function NotificationsScreen({ navigation }) {
 
 
   // ── Load ───────────────────────────────────────────────────────────────────
+  const [loadError, setLoadError] = useState(null);
   const load = useCallback(() => {
     setLoading(true);
+    setLoadError(null);
     api.getNotifications()
       .then(setList)
-      .catch(() => {})
+      .catch((e) => setLoadError(e?.message ?? 'Could not load notifications.'))
       .finally(() => setLoading(false));
   }, []);
 
@@ -160,7 +162,7 @@ export default function NotificationsScreen({ navigation }) {
   const handleClearAll = () => {
     Alert.alert(
       'Clear All Notifications',
-      'This permanently deletes all broadcast notifications for everyone. Individual birthday wishes are kept.',
+      'This permanently deletes all general notifications for everyone. Birthday notifications and personal wishes are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -190,6 +192,7 @@ export default function NotificationsScreen({ navigation }) {
       return;
     }
     setSendWishTarget({
+      notificationId:   item.id,                         // used to dismiss after send
       birthdayMemberId: meta.birthday_member_id,
       birthdayName:     meta.birthday_member_name ?? 'them',
     });
@@ -198,9 +201,20 @@ export default function NotificationsScreen({ navigation }) {
   // ── Open received wish (mark read on open) ─────────────────────────────────
   const openWish = (item) => {
     setActiveWish(item);
-    if (!item.read) {
-      api.markNotificationsRead([item.id]).catch(() => {});
-      setList((prev) => prev.map((n) => n.id === item.id ? { ...n, read: true } : n));
+    // Mark as read immediately when opened, regardless of prior state.
+    api.markNotificationsRead([item.id]).catch(() => {});
+    setList((prev) => prev.map((n) => n.id === item.id ? { ...n, read: true } : n));
+  };
+
+  // ── Close wish modal and dismiss the notification ─────────────────────────
+  // Once the birthday person has read the wish, remove it from their list so
+  // it doesn't pile up. Uses the same dismiss path as swiping-to-delete.
+  const handleWishClose = () => {
+    const wish = activeWish;
+    setActiveWish(null);
+    if (wish) {
+      api.deleteNotifications([wish.id], false).catch(() => {});
+      setList((prev) => prev.filter((n) => n.id !== wish.id));
     }
   };
 
@@ -385,7 +399,9 @@ export default function NotificationsScreen({ navigation }) {
           !loading ? (
             <View style={styles.emptyWrap}>
               <Ionicons name="notifications-off-outline" size={40} color={colors.inkSoft} />
-              <Text style={styles.empty}>No notifications yet.</Text>
+              <Text style={styles.empty}>
+                {loadError ?? 'No notifications yet.'}
+              </Text>
             </View>
           ) : null
         }
@@ -397,7 +413,14 @@ export default function NotificationsScreen({ navigation }) {
         birthdayName={sendWishTarget?.birthdayName}
         onClose={() => setSendWishTarget(null)}
         onSent={() => {
+          const nid = sendWishTarget?.notificationId;
           setSendWishTarget(null);
+          // Dismiss the BIRTHDAY notification for this user so the
+          // "Send Wishes" row disappears once they've sent their wish.
+          if (nid) {
+            api.deleteNotifications([nid], false).catch(() => {});
+            setList((prev) => prev.filter((n) => n.id !== nid));
+          }
           Alert.alert('Wish sent! 🎉', 'Your birthday wish has been delivered.');
         }}
       />
@@ -405,7 +428,7 @@ export default function NotificationsScreen({ navigation }) {
       <WishModal
         visible={!!activeWish}
         wish={activeWish}
-        onClose={() => setActiveWish(null)}
+        onClose={handleWishClose}
       />
     </View>
   );

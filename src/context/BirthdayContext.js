@@ -24,8 +24,10 @@
  *   – dismiss         : close the modal + stop song
  */
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../services/supabase';
 import api from '../services/api';
+import { sendPushToAllExcept } from '../services/pushNotifications';
 import { useAuth } from './AuthContext';
 
 const BirthdayContext = createContext(null);
@@ -74,30 +76,20 @@ export function BirthdayProvider({ children }) {
     if (checkedKey.current === key) return;
     checkedKey.current = key;
 
-    runBirthdayCheck(isAdmin, guestMember);
+    runBirthdayCheck(isAdmin, guestMember, key);
   }, [user]);
 
-  const runBirthdayCheck = async (isAdminNow, guestMemberNow) => {
+  const runBirthdayCheck = async (isAdminNow, guestMemberNow, sessionKey) => {
     try {
       // Always fetch all-parish birthdays for notification purposes.
-      // Family-scoped fetch (allParish=false) would miss members outside the
-      // current user's family, so their birthday notifications would never be
-      // inserted. Guests have no auth session so they skip the insert anyway.
       const people = await api.getTodaysBirthdays(true);
       if (!people || people.length === 0) return;
 
       // ── Resolve the current user's own member id ──────────────────────────
-      // Priority:
-      //   1. Guest mode  → guestMember.id  (synthetic session, no Supabase auth)
-      //   2. Real session → user.member_id  (set by AuthContext via currentProfile)
-      //   3. Fallback    → direct profile query (belt-and-braces)
       let myMemberId = null;
       if (guestMemberNow) {
         myMemberId = guestMemberNow.id;
       } else {
-        // user object is the merged { id, ...profile } built in api.onAuthChange.
-        // For staff who have no linked member, member_id is null/undefined — that
-        // is correct; they see all birthdays as "others".
         myMemberId = user?.member_id ?? null;
         if (!myMemberId) {
           const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -119,10 +111,17 @@ export function BirthdayProvider({ children }) {
       const selfRows   = myMemberId ? people.filter((p) => p.id === myMemberId) : [];
       const othersRows = myMemberId ? people.filter((p) => p.id !== myMemberId) : people;
 
-      // ── Birthday person path: show modal ──────────────────────────────────
+      // ── Birthday person path: show modal (once per day per user) ──────────
+      // Persist a flag in AsyncStorage so the modal is suppressed on subsequent
+      // logins within the same calendar day — even after logout/re-login.
       if (selfRows.length > 0) {
-        setSelfBirthday(selfRows);
-        setModalVisible(true);
+        const storageKey = `birthday_modal_shown:${sessionKey}`;
+        const alreadyShown = await AsyncStorage.getItem(storageKey).catch(() => null);
+        if (!alreadyShown) {
+          await AsyncStorage.setItem(storageKey, '1').catch(() => {});
+          setSelfBirthday(selfRows);
+          setModalVisible(true);
+        }
       }
 
       // ── Others' birthdays: insert a BIRTHDAY notification (idempotent) ────
@@ -163,9 +162,10 @@ export function BirthdayProvider({ children }) {
             ? `Wishing ${member.first_name} ${member.last_name} a blessed ${age}th birthday! 🎉`
             : `Wishing ${member.first_name} ${member.last_name} a very happy birthday! 🎉`;
 
-          // Expire at 23:59:59 tonight so the notification vanishes after today.
+          // Expire at 23:59:59 UTC tonight so the notification is visible
+          // to all timezones throughout the day and disappears at UTC midnight.
           const endOfDay = new Date();
-          endOfDay.setHours(23, 59, 59, 999);
+          endOfDay.setUTCHours(23, 59, 59, 999);
 
           const { error: insertErr } = await supabase.from('notifications').insert({
             title,
@@ -186,6 +186,16 @@ export function BirthdayProvider({ children }) {
               '| Make sure migration 006_wish_notifications.sql has been applied.');
           } else {
             console.log('[BirthdayContext] inserted BIRTHDAY notification for', member.first_name);
+            // Send a push notification to every member's device except the
+            // user who triggered the birthday check (they already see it
+            // in-app). Fire-and-forget — a push failure must never crash the
+            // birthday flow.
+            sendPushToAllExcept(
+              authUser.id,
+              title,
+              message,
+              { screen: 'Notifications', type: 'BIRTHDAY' },
+            ).catch(() => {});
           }
         } else {
           console.log('[BirthdayContext] BIRTHDAY notification already exists for', member.first_name);

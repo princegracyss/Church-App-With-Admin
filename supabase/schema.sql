@@ -195,7 +195,11 @@ create policy "dismissals_own" on notification_dismissals
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
 create or replace function dismiss_notifications(p_ids uuid[])
-returns void language plpgsql security definer set search_path = public as $$
+returns void
+language plpgsql security definer
+set search_path = public
+set row_security = off
+as $$
 begin
   insert into notification_dismissals (notification_id, user_id)
   select unnest(p_ids), auth.uid()
@@ -287,32 +291,48 @@ create table if not exists audit_logs (
 -- "Staff" = any elevated role (super_admin / admin / parish_priest /
 -- church_secretary). Grants the broad member/family/sacraments/etc. CRUD
 -- that predates the admin module — unchanged behaviour.
-create or replace function is_admin() returns boolean as $$
+-- RLS helper functions — all are security definer + row_security off.
+-- `security definer` alone does NOT disable RLS inside a function; Postgres
+-- still evaluates policies on every table queried. Adding `set row_security = off`
+-- is what actually breaks the recursion when these functions are called from
+-- within RLS policies on `members` or `families`.
+
+create or replace function is_admin()
+returns boolean language sql stable security definer
+set search_path = public set row_security = off as $$
   select exists (
     select 1 from profiles
     where id = auth.uid() and role in ('super_admin','admin','parish_priest','church_secretary')
   );
-$$ language sql stable security definer;
+$$;
 
-create or replace function get_my_role() returns text as $$
-  select role from profiles where id = auth.uid();
-$$ language sql stable security definer;
+create or replace function get_my_role()
+returns text language sql stable security definer
+set search_path = public set row_security = off as $$
+  select role from profiles where id = auth.uid() limit 1;
+$$;
 
-create or replace function is_super_admin() returns boolean as $$
+create or replace function is_super_admin()
+returns boolean language sql stable security definer
+set search_path = public set row_security = off as $$
   select get_my_role() = 'super_admin';
-$$ language sql stable security definer;
+$$;
 
-create or replace function my_family_id() returns uuid as $$
-  select m.family_id from profiles p join members m on m.id = p.member_id where p.id = auth.uid();
-$$ language sql stable security definer set search_path = public;
-
--- Returns the member_id linked to the current auth session.
--- Security-definer so it can be called from RLS policies on members/families
--- without triggering circular RLS evaluation (those policies must not inline
--- a direct subquery on profiles while profiles itself is being evaluated).
-create or replace function my_member_id() returns uuid as $$
+-- my_member_id: resolves profiles.member_id for the current session.
+-- Called by my_family_id, my_bcc_unit, and directly from several RLS policies.
+create or replace function my_member_id()
+returns uuid language sql stable security definer
+set search_path = public set row_security = off as $$
   select member_id from profiles where id = auth.uid() limit 1;
-$$ language sql stable security definer set search_path = public;
+$$;
+
+-- my_family_id: resolves the current member's family_id.
+-- Called from members_family_select and families_own_select policies.
+create or replace function my_family_id()
+returns uuid language sql stable security definer
+set search_path = public set row_security = off as $$
+  select family_id from members where id = my_member_id() limit 1;
+$$;
 
 -- =========================================================================
 -- ROW LEVEL SECURITY
@@ -394,12 +414,11 @@ drop policy if exists "families_admin_all" on families;
 create policy "families_admin_all" on families for all using (is_admin()) with check (is_admin());
 drop policy if exists "families_own_select" on families;
 create policy "families_own_select" on families for select using (id = my_family_id());
--- migration 026+028: member can read their own family via security-definer my_member_id()
+-- migration 026+028+029: member reads their own family; uses my_family_id()
+-- (row_security=off) so no members table scan is needed from a families policy.
 drop policy if exists "families_member_select" on families;
 create policy "families_member_select" on families
-  for select using (
-    id in (select family_id from members where members.id = my_member_id())
-  );
+  for select using (id = my_family_id());
 
 -- members: admins full CRUD (this is the "add / remove members" flow);
 -- everyone else can only read members in their own family, or their own single row
@@ -411,15 +430,14 @@ create policy "members_family_select" on members for select using (family_id = m
 drop policy if exists "members_self_select" on members;
 create policy "members_self_select" on members
   for select using (id = my_member_id());
--- migration 026+028: member can read all active members in their own family
+-- migration 026+028+029: member can read all members in their own family.
+-- Uses my_family_id() scalar (row_security=off) — no self-join on members,
+-- which was the source of the infinite recursion.
 drop policy if exists "members_own_family_select" on members;
 create policy "members_own_family_select" on members
   for select using (
     family_id is not null
-    and family_id in (
-      select family_id from members m2
-      where m2.id = my_member_id() and m2.family_id is not null
-    )
+    and family_id = my_family_id()
   );
 
 -- sacraments / donations / documents / prayer_requests: admins all,
@@ -1023,10 +1041,10 @@ create policy "notifications_liturgy_insert" on notifications for insert
   with check (auth.uid() is not null and type in ('LITURGY', 'LITURGY_REMINDER'));
 
 -- =========================================================================
--- CALENDAR BIRTHDAYS RPC  (migration 008)
+-- CALENDAR BIRTHDAYS RPC  (migration 008 + 030)
 -- Returns all active member DOBs to any authenticated or anon caller.
--- Security definer bypasses members RLS so regular members can see the
--- full parish birthday calendar without accessing raw member data.
+-- row_security=off ensures members RLS is never evaluated inside this
+-- function, preventing the circular recursion error on member sessions.
 -- =========================================================================
 create or replace function get_calendar_birthdays()
 returns table (
@@ -1038,6 +1056,8 @@ returns table (
 language sql
 security definer
 stable
+set search_path = public
+set row_security = off
 as $$
   select id, first_name, last_name, date_of_birth
   from members
@@ -1327,3 +1347,193 @@ begin
 end;
 $$;
 grant execute on function guest_update_member_photo(uuid, text) to anon;
+
+-- =========================================================================
+-- MIGRATION 032 + 035: get_my_notifications RPC
+-- Single server-side query replacing the 3-round-trip client join.
+-- Returns all non-expired, non-dismissed notifications for the caller,
+-- plus a `read` boolean from notification_reads.
+-- Migration 035 adds BCC_UNIT scoping: target='BCC_UNIT' rows are only
+-- returned to members whose BCC unit matches metadata->>'bcc_unit_name'.
+-- Staff (admin/priest/secretary) always see all BCC_UNIT notifications.
+-- =========================================================================
+
+create or replace function get_my_notifications()
+returns table (
+  id           uuid,
+  title        text,
+  message      text,
+  type         text,
+  target       text,
+  target_id    uuid,
+  created_by   uuid,
+  created_at   timestamptz,
+  metadata     jsonb,
+  expires_at   timestamptz,
+  read         boolean
+)
+language sql
+stable
+security definer
+set search_path = public
+set row_security = off
+as $$
+  with
+  caller as (
+    select auth.uid() as uid
+  ),
+  caller_profile as (
+    select member_id, role
+    from   profiles
+    where  id = (select uid from caller)
+    limit  1
+  ),
+  -- Resolve caller's BCC unit: member-level first, then family-level fallback.
+  caller_bcc as (
+    select coalesce(
+      m.basic_christian_community,
+      f.basic_christian_community
+    ) as bcc_unit
+    from   caller_profile cp
+    left   join members  m on m.id  = cp.member_id
+    left   join families f on f.id  = m.family_id
+  ),
+  -- True if the caller is a staff role who should see all notifications.
+  caller_is_staff as (
+    select (cp.role in ('super_admin','admin','parish_priest','church_secretary')) as is_staff
+    from   caller_profile cp
+  ),
+  dismissed as (
+    select notification_id
+    from   notification_dismissals
+    where  user_id = (select uid from caller)
+  ),
+  read_ids as (
+    select notification_id
+    from   notification_reads
+    where  user_id = (select uid from caller)
+  ),
+  -- Broadcast and BCC-unit-targeted notifications (non-WISH).
+  broadcasts as (
+    select n.*
+    from   notifications n
+    cross  join caller_bcc  cb
+    cross  join caller_is_staff cs
+    where  n.type <> 'WISH'
+    and    (n.expires_at is null or n.expires_at > now())
+    and    n.id not in (select notification_id from dismissed)
+    and    (
+             -- Regular broadcasts go to everyone.
+             n.target = 'ALL'
+             -- BCC_UNIT notifications: staff see all; others only see their unit.
+             or (
+               n.target = 'BCC_UNIT'
+               and (
+                 cs.is_staff = true
+                 or cb.bcc_unit is not null
+                    and cb.bcc_unit = n.metadata->>'bcc_unit_name'
+               )
+             )
+           )
+  ),
+  -- WISH notifications targeted to this user (non-dismissed).
+  wishes as (
+    select n.*
+    from   notifications n
+    join   caller_profile cp on cp.member_id is not null
+    where  n.type   = 'WISH'
+    and    n.target = 'MEMBER'
+    and    n.target_id = cp.member_id
+    and    n.id not in (select notification_id from dismissed)
+  )
+  select
+    n.id,
+    n.title,
+    n.message,
+    n.type,
+    n.target,
+    n.target_id,
+    n.created_by,
+    n.created_at,
+    n.metadata,
+    n.expires_at,
+    (n.id in (select notification_id from read_ids)) as read
+  from (
+    select * from broadcasts
+    union all
+    select * from wishes
+  ) n
+  order by n.created_at desc;
+$$;
+
+grant execute on function get_my_notifications() to authenticated;
+
+-- =========================================================================
+-- MIGRATION 033: get_members_by_bcc RPC
+-- BCC may be on the family row, not the member row.  This RPC does a LEFT
+-- JOIN families and ORs both columns, so unit member lists are complete.
+-- =========================================================================
+
+create or replace function get_members_by_bcc(
+  p_bcc_unit text,
+  p_search   text default ''
+)
+returns setof members
+language sql
+stable
+security definer
+set search_path = public
+set row_security = off
+as $$
+  select m.*
+  from   members m
+  left   join families f on f.id = m.family_id
+  where  (
+           m.basic_christian_community = p_bcc_unit
+           or f.basic_christian_community = p_bcc_unit
+         )
+  and (
+    p_search = ''
+    or m.first_name    ilike '%' || p_search || '%'
+    or m.last_name     ilike '%' || p_search || '%'
+    or m.member_number ilike '%' || p_search || '%'
+    or m.mobile        ilike '%' || p_search || '%'
+  )
+  order by m.first_name;
+$$;
+
+grant execute on function get_members_by_bcc(text, text) to authenticated;
+
+-- =========================================================================
+-- MIGRATION 034: get_push_tokens_for_bcc RPC
+-- Returns Expo push tokens for all members of a given BCC unit.
+-- Mirrors the OR logic from migration 033: checks both member-level and
+-- family-level basic_christian_community. Used by createLiturgyAssignment
+-- to send targeted push notifications to the assigned unit only.
+-- =========================================================================
+
+create or replace function get_push_tokens_for_bcc(
+  p_bcc_unit        text,
+  p_exclude_user_id uuid default null
+)
+returns table (token text)
+language sql
+stable
+security definer
+set search_path = public
+set row_security = off
+as $$
+  select distinct pt.token
+  from   push_tokens pt
+  join   profiles    pr on pr.id         = pt.user_id
+  join   members     m  on m.id          = pr.member_id
+  left   join families f  on f.id        = m.family_id
+  where  pt.token is not null
+  and    (
+           m.basic_christian_community = p_bcc_unit
+           or f.basic_christian_community = p_bcc_unit
+         )
+  and    (p_exclude_user_id is null or pt.user_id <> p_exclude_user_id);
+$$;
+
+grant execute on function get_push_tokens_for_bcc(text, uuid) to authenticated;

@@ -228,3 +228,20 @@ export async function sendPushToMember(memberId, title, body, data = {}) {
     })));
   } catch (_) {}
 }
+
+// ── Send to all members of a BCC unit ────────────────────────────────────────
+// Uses get_push_tokens_for_bcc RPC (migration 034) which ORs
+// members.basic_christian_community and families.basic_christian_community.
+// Optionally excludes the admin who triggered the action.
+export async function sendPushToBccUnit(bccUnitName, excludeUserId, title, body, data = {}) {
+  try {
+    const { data: rows, error } = await supabase.rpc('get_push_tokens_for_bcc', {
+      p_bcc_unit:        bccUnitName,
+      p_exclude_user_id: excludeUserId ?? null,
+    });
+    if (error || !rows?.length) return;
+    await dispatchMessages(rows.map(({ token }) => ({
+      to: token, sound: 'default', title, body, data, channelId: 'parish-default',
+    })));
+  } catch (_) {}
+}

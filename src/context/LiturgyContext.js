@@ -77,12 +77,18 @@ export function LiturgyProvider({ children }) {
             .single();
           if (profile.data?.member_id) {
             const memberId = profile.data.member_id;
-            const [memberRow, orgRows] = await Promise.all([
-              supabase.from('members').select('basic_christian_community').eq('id', memberId).single(),
-              supabase.from('organization_members').select('organization_id').eq('member_id', memberId),
-            ]);
-            myBcc    = memberRow.data?.basic_christian_community ?? null;
-            myOrgIds = (orgRows.data || []).map((r) => r.organization_id);
+              const [memberRow, orgRows] = await Promise.all([
+                // Join families so we get BCC from either the member row or the family row.
+                supabase.from('members')
+                  .select('basic_christian_community, families(basic_christian_community)')
+                  .eq('id', memberId).single(),
+                supabase.from('organization_members').select('organization_id').eq('member_id', memberId),
+              ]);
+              // Prefer member-level BCC; fall back to family-level BCC.
+              myBcc    = memberRow.data?.basic_christian_community
+                         || memberRow.data?.families?.basic_christian_community
+                         || null;
+              myOrgIds = (orgRows.data || []).map((r) => r.organization_id);
           }
         } catch (_) {}
 

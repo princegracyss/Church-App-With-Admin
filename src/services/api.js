@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { sendPushToAll, sendPushToAllExcept, sendPushToMember } from './pushNotifications';
+import { sendPushToAll, sendPushToAllExcept, sendPushToMember, sendPushToBccUnit } from './pushNotifications';
 
 // Every function maps to a table in supabase/schema.sql, named to match the
 // architecture doc (members, families, sacraments, ...). Row Level Security
@@ -202,9 +202,19 @@ export const api = {
   },
 
   async getMembers({ query: search, familyId, bccUnit } = {}) {
+    // When filtering by BCC unit, BCC may be stored on the family row rather than
+    // (or in addition to) the member row. The RPC get_members_by_bcc handles the
+    // OR across both columns server-side. For other filters we use the table directly.
+    if (bccUnit) {
+      const { data, error } = await supabase.rpc('get_members_by_bcc', {
+        p_bcc_unit: bccUnit,
+        p_search:   search?.trim() ?? '',
+      });
+      if (error) throw new Error(error.message);
+      return data ?? [];
+    }
     let q = supabase.from('members').select('*').order('first_name');
     if (familyId) q = q.eq('family_id', familyId);
-    if (bccUnit)  q = q.eq('basic_christian_community', bccUnit);
     if (search) {
       const s = search.trim();
       q = q.or(`first_name.ilike.%${s}%,last_name.ilike.%${s}%,member_number.ilike.%${s}%,mobile.ilike.%${s}%`);
@@ -588,109 +598,79 @@ export const api = {
   },
 
   // Delete specific notifications by ID.
-  // Admins:  rows are permanently deleted from the notifications table.
-  // Members: inserts into notification_dismissals via security-definer RPC.
-  // Guests:  dismissed IDs stored in an in-memory Set for the session
-  //          (no Supabase session → auth.uid() is null → can't write to DB).
+  // BIRTHDAY and WISH rows are always dismissed (per-user) rather than
+  // hard-deleted — they are shared broadcast rows and hard-deleting them
+  // causes BirthdayContext to re-insert them on the next login.
+  // All other types are hard-deleted when the caller is an admin.
+  // Guests: dismissed IDs stored in an in-memory Set for the session.
   async deleteNotifications(ids, isAdminUser = false) {
     if (!ids?.length) return;
-    if (isAdminUser) {
-      const { error } = await supabase
-        .from('notifications').delete().in('id', ids);
-      if (error) throw new Error(error.message);
-    } else if (_guestMember) {
-      // Guest mode — no Supabase session, store dismissals in memory only.
+
+    if (_guestMember) {
       ids.forEach((id) => _guestDismissed.add(id));
-    } else {
-      const { error } = await supabase.rpc('dismiss_notifications', { p_ids: ids });
+      return;
+    }
+
+    // Fetch types for the given ids so we can split hard-delete vs dismiss.
+    const { data: rows } = await supabase
+      .from('notifications').select('id, type').in('id', ids);
+
+    const protectedTypes = new Set(['BIRTHDAY', 'WISH']);
+    const toHardDelete = (rows || [])
+      .filter((r) => isAdminUser && !protectedTypes.has(r.type))
+      .map((r) => r.id);
+    const toDismiss = ids.filter((id) => !toHardDelete.includes(id));
+
+    if (toHardDelete.length) {
+      const { error } = await supabase
+        .from('notifications').delete().in('id', toHardDelete);
+      if (error) throw new Error(error.message);
+    }
+    if (toDismiss.length) {
+      const { error } = await supabase
+        .rpc('dismiss_notifications', { p_ids: toDismiss });
       if (error) throw new Error(error.message);
     }
   },
 
-  // Delete ALL non-WISH notifications (admin only).
+  // Delete ALL general broadcast notifications (admin only).
+  // Skips WISH (personal birthday wishes) and BIRTHDAY (auto-inserted daily,
+  // auto-expire at UTC midnight — deleting them causes BirthdayContext to
+  // re-insert on the next login since the dedup check finds no existing row).
   async clearAllNotifications() {
     const { error } = await supabase
-      .from('notifications').delete().neq('type', 'WISH');
+      .from('notifications').delete()
+      .not('type', 'in', '("WISH","BIRTHDAY")');
     if (error) throw new Error(error.message);
   },
 
   async getNotifications() {
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Resolve member_id for WISH filtering.
-    // Guest: use the in-memory member row. Authenticated: query profiles directly
-    // (single lightweight query — avoids the members join that caused circular RLS).
-    let myMemberId = null;
-    if (_guestMember) {
-      myMemberId = _guestMember.id;
-    } else if (user) {
-      const { data: prof } = await supabase
-        .from('profiles').select('member_id').eq('id', user.id).single();
-      myMemberId = prof?.member_id ?? null;
+    // ── Guest path ───────────────────────────────────────────────────────────
+    if (!user && !_guestMember) {
+      const now = new Date().toISOString();
+      const { data } = await supabase.from('notifications').select('*')
+        .neq('type', 'WISH').or(`expires_at.is.null,expires_at.gt.${now}`)
+        .order('created_at', { ascending: false });
+      return (data || []).map((n) => ({ ...n, read: false }));
     }
-
-    // Fetch broadcast notifications (target ALL/FAMILY/etc) + any WISH
-    // notifications explicitly targeted at this member.
-
-    // If we know who we are, broaden query to include member-targeted WISHes.
-    // Otherwise just fetch non-WISH / non-member-targeted rows.
-    const now = new Date().toISOString();
-
-    let notifications;
-    if (myMemberId) {
-      // Two parallel fetches: broadcast rows + this member's WISH rows.
-      const [broadcast, wishes] = await Promise.all([
-        supabase.from('notifications').select('*')
-          .neq('type', 'WISH')
-          .or(`expires_at.is.null,expires_at.gt.${now}`)
-          .order('created_at', { ascending: false }),
-        supabase.from('notifications').select('*')
-          .eq('type', 'WISH')
-          .eq('target', 'MEMBER')
-          .eq('target_id', myMemberId)
-          .order('created_at', { ascending: false }),
-      ]);
-      if (broadcast.error) throw new Error(broadcast.error.message);
-      if (wishes.error) throw new Error(wishes.error.message);
-      // Merge and re-sort by created_at descending.
-      const merged = [...(broadcast.data || []), ...(wishes.data || [])];
-      merged.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      notifications = merged;
-    } else {
-      notifications = unwrap(
-        await supabase.from('notifications').select('*')
-          .neq('type', 'WISH')
-          .or(`expires_at.is.null,expires_at.gt.${now}`)
-          .order('created_at', { ascending: false }),
-      );
-    }
-
-    if (!user && !_guestMember) return notifications.map((n) => ({ ...n, read: false }));
-
-    // Guest mode — no Supabase session; filter using the in-memory dismissed set.
-    if (!user) {
-      return notifications
+    if (!user && _guestMember) {
+      const now = new Date().toISOString();
+      const { data } = await supabase.from('notifications').select('*')
+        .neq('type', 'WISH').or(`expires_at.is.null,expires_at.gt.${now}`)
+        .order('created_at', { ascending: false });
+      return (data || [])
         .filter((n) => !_guestDismissed.has(n.id))
         .map((n) => ({ ...n, read: false }));
     }
 
-    // Authenticated user — fetch read status and dismissals from DB in parallel.
-    const [readsResult, dismissalsResult] = await Promise.all([
-      supabase.from('notification_reads')
-        .select('notification_id')
-        .eq('user_id', user.id),
-      supabase.from('notification_dismissals')
-        .select('notification_id')
-        .eq('user_id', user.id),
-    ]);
-
-    const readIds      = new Set((readsResult.data || []).map((r) => r.notification_id));
-    const dismissedIds = new Set((dismissalsResult.data || []).map((r) => r.notification_id));
-
-    // Strip notifications this user has dismissed, then annotate read status.
-    return notifications
-      .filter((n) => !dismissedIds.has(n.id))
-      .map((n) => ({ ...n, read: readIds.has(n.id) }));
+    // ── Authenticated path ───────────────────────────────────────────────────
+    // Use a single RPC that does all filtering server-side so the client
+    // never has to reassemble results across multiple round-trips.
+    const { data, error } = await supabase.rpc('get_my_notifications');
+    if (error) throw new Error(error.message);
+    return data || [];
   },
 
   // Send a birthday wish to a specific member.
@@ -1253,7 +1233,9 @@ export const api = {
       }).select().single(),
     );
 
-    // Broadcast a LITURGY notification to all members.
+    // Insert a LITURGY notification.
+    // When assigned to a BCC unit the notification is targeted to that unit;
+    // when assigned to an org (or unknown) it goes to ALL.
     const dateLabel = new Date(liturgyDate + 'T00:00:00').toLocaleDateString('en-IN', {
       weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
     });
@@ -1264,17 +1246,28 @@ export const api = {
         title:      notifTitle,
         message:    notifMessage,
         type:       'LITURGY',
-        target:     'ALL',
+        // BCC-unit assignments are targeted; org or fallback broadcasts to ALL.
+        target:     bccUnitName ? 'BCC_UNIT' : 'ALL',
         created_by: user?.id ?? null,
-        metadata:   { liturgy_assignment_id: assignment.id, host_name: hostName, liturgy_date: liturgyDate },
+        metadata: {
+          liturgy_assignment_id: assignment.id,
+          host_name:             hostName,
+          liturgy_date:          liturgyDate,
+          bcc_unit_name:         bccUnitName || null,
+        },
       });
     } catch (_) {
       // In-app notification failure should not block the assignment itself.
     }
 
-    // Push notification — broadcast to all registered devices except the
-    // admin who just performed the action (they don't need to notify themselves).
-    sendPushToAllExcept(user?.id ?? null, notifTitle, notifMessage, { screen: 'Notifications', type: 'LITURGY' }).catch(() => {});
+    // Push notification:
+    // • BCC unit assignment → send only to that unit's members.
+    // • Org / no-unit assignment → send to the whole parish.
+    if (bccUnitName) {
+      sendPushToBccUnit(bccUnitName, user?.id ?? null, notifTitle, notifMessage, { screen: 'Notifications', type: 'LITURGY' }).catch(() => {});
+    } else {
+      sendPushToAllExcept(user?.id ?? null, notifTitle, notifMessage, { screen: 'Notifications', type: 'LITURGY' }).catch(() => {});
+    }
 
     return assignment;
   },

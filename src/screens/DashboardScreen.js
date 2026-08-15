@@ -62,13 +62,13 @@ export default function DashboardScreen({ navigation }) {
   }, [navigation, isGuest]);
 
   useEffect(() => {
-    // Real-time subscription — badge updates the instant a new notification
-    // is inserted in any app instance (birthday check, admin broadcast, etc.).
+    // Real-time subscription — badge updates on any notification change:
+    // INSERT (new broadcast/birthday), DELETE (admin clear), UPDATE (rare).
     channelRef.current = supabase
       .channel('dashboard-notifications')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'notifications' },
+        { event: '*', schema: 'public', table: 'notifications' },
         () => refreshUnread(),
       )
       .subscribe();
