@@ -27,6 +27,7 @@ const ADMIN_EXTRA_MODULES = [
   { key: 'Organizations', label: 'Organizations',  icon: 'flag' },
   { key: 'Documents',     label: 'Documents',      icon: 'document-text' },
   { key: 'Donations',     label: 'Donations',      icon: 'gift' },
+  { key: 'Marriages',     label: 'Marriages',      icon: 'heart' },
   { key: 'Search',        label: 'Advanced Search',icon: 'search' },
   { key: 'Reports',       label: 'Reports',        icon: 'bar-chart' },
   { key: 'News',          label: 'Parish News',    icon: 'newspaper' },
@@ -62,10 +63,15 @@ export default function DashboardScreen({ navigation }) {
   }, [navigation, isGuest]);
 
   useEffect(() => {
-    // Real-time subscription — badge updates on any notification change:
-    // INSERT (new broadcast/birthday), DELETE (admin clear), UPDATE (rare).
+    // Real-time subscription — badge updates on any notification change.
+    // Always remove any existing channel before creating a new one so that
+    // re-mounting (navigate away and back) never stacks duplicate channels.
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
     channelRef.current = supabase
-      .channel('dashboard-notifications')
+      .channel(`dashboard-notifications-${Date.now()}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'notifications' },

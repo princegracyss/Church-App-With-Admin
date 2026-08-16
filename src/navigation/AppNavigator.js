@@ -30,6 +30,8 @@ import BccFamiliesScreen from '../screens/BccFamiliesScreen';
 import LiturgyScheduleScreen from '../screens/LiturgyScheduleScreen';
 import LiturgyAssignScreen from '../screens/LiturgyAssignScreen';
 import MemberSelfEditScreen from '../screens/MemberSelfEditScreen';
+import EditFamilyScreen from '../screens/EditFamilyScreen';
+import MarriagesScreen from '../screens/MarriagesScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -80,6 +82,8 @@ export default function AppNavigator({ navigationRef }) {
             <Stack.Screen name="LiturgySchedule" component={LiturgyScheduleScreen} />
             <Stack.Screen name="LiturgyAssign" component={LiturgyAssignScreen} />
             <Stack.Screen name="MemberSelfEdit" component={MemberSelfEditScreen} />
+            <Stack.Screen name="EditFamily" component={EditFamilyScreen} />
+            <Stack.Screen name="Marriages" component={MarriagesScreen} />
             {PLACEHOLDERS.map((p) => (
               <Stack.Screen
                 key={p.name}

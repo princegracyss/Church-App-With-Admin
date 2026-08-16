@@ -470,6 +470,12 @@ export const api = {
   // AddMemberScreen (isHeadMember: true) to add the head, then setFamilyHead
   // below links them. A family with no head yet is a valid, visible state
   // (see getFamiliesWithStatus), not an error condition.
+  async updateFamily(familyId, dto) {
+    return unwrap(
+      await supabase.from('families').update(dto).eq('id', familyId).select().single(),
+    );
+  },
+
   async createFamily(dto) {
     return unwrap(await supabase.from('families').insert(dto).select().single());
   },
@@ -1179,40 +1185,27 @@ export const api = {
     );
   },
 
-  // Assignments relevant to the signed-in member:
-  //   • Assignments for their BCC unit (by unit name)
-  //   • Assignments for any organization they belong to
+  // Assignments relevant to the signed-in member (migration 036).
+  // Uses a security-definer RPC that ORs across bcc_unit_name / org_id
+  // server-side — replaces the old client-side full-table-scan approach.
+  // Guest fallback: the RPC requires auth; guests get a client-side filter.
   async getMyLiturgyAssignments() {
-    let myBcc = null;
-    let myOrgIds = [];
-
+    // Guest mode — no Supabase session; fall back to simple BCC filter.
     if (_guestMember) {
-      myBcc = _guestMember.basic_christian_community || null;
-    } else {
-      const p = await currentProfile();
-      if (p?.member_id) {
-        const [memberRow, orgRows] = await Promise.all([
-          supabase.from('members').select('basic_christian_community').eq('id', p.member_id).single(),
-          supabase.from('organization_members').select('organization_id').eq('member_id', p.member_id),
-        ]);
-        myBcc    = memberRow.data?.basic_christian_community || null;
-        myOrgIds = (orgRows.data || []).map((r) => r.organization_id);
-      }
+      const myBcc = _guestMember.basic_christian_community || null;
+      if (!myBcc) return [];
+      const all = unwrap(
+        await supabase
+          .from('liturgy_assignments')
+          .select('*')
+          .order('liturgy_date', { ascending: true }),
+      );
+      return all.filter((a) => a.bcc_unit_name && a.bcc_unit_name === myBcc);
     }
 
-    if (!myBcc && myOrgIds.length === 0) return [];
-
-    // Fetch all assignments and filter client-side (Supabase OR across different columns).
-    const all = unwrap(
-      await supabase
-        .from('liturgy_assignments')
-        .select('*')
-        .order('liturgy_date', { ascending: true }),
-    );
-    return all.filter((a) =>
-      (a.bcc_unit_name && a.bcc_unit_name === myBcc) ||
-      (a.org_id        && myOrgIds.includes(a.org_id))
-    );
+    const { data, error } = await supabase.rpc('get_my_liturgy_assignments');
+    if (error) throw new Error(error.message);
+    return data ?? [];
   },
 
   // Create a new liturgy assignment and broadcast a LITURGY notification.
@@ -1277,6 +1270,37 @@ export const api = {
     return unwrap(
       await supabase.from('liturgy_assignments').delete().eq('id', id).select().single(),
     );
+  },
+
+  // ---- Marriages -------------------------------------------------------
+  // Returns marriages joined with husband and wife member name fields.
+  async getMarriages() {
+    return unwrap(
+      await supabase
+        .from('marriages')
+        .select(
+          'id, marriage_date, church, certificate_number,' +
+          'husband:husband_member_id(id, first_name, last_name, member_number),' +
+          'wife:wife_member_id(id, first_name, last_name, member_number)',
+        )
+        .order('marriage_date', { ascending: false }),
+    );
+  },
+
+  async createMarriage({ husbandMemberId, wifeMemberId, marriageDate, church, certNumber }) {
+    return unwrap(
+      await supabase.from('marriages').insert({
+        husband_member_id:  husbandMemberId,
+        wife_member_id:     wifeMemberId,
+        marriage_date:      marriageDate,
+        church:             church || null,
+        certificate_number: certNumber || null,
+      }).select().single(),
+    );
+  },
+
+  async deleteMarriage(id) {
+    return unwrap(await supabase.from('marriages').delete().eq('id', id).select().single());
   },
 };
 

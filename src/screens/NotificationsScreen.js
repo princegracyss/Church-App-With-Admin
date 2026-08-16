@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, StyleSheet,
   TouchableOpacity, Alert, ActivityIndicator,
+  Modal, TextInput, ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, radius } from '../theme/theme';
@@ -24,6 +25,124 @@ const TYPE_META = {
   LITURGY_REMINDER: { icon: 'alarm-outline',     accent: '#1a5c8a' },
 };
 
+// ── Notification type filter tabs ────────────────────────────────────────────
+const FILTER_TABS = [
+  { key: 'ALL',      label: 'All' },
+  { key: 'GENERAL',  label: 'General' },
+  { key: 'BIRTHDAY', label: 'Birthday' },
+  { key: 'LITURGY',  label: 'Liturgy' },
+  { key: 'WISH',     label: 'Wishes' },
+];
+
+// Notification types that belong to the "Liturgy" filter tab
+const LITURGY_TYPES = new Set(['LITURGY', 'LITURGY_REMINDER']);
+
+function matchesFilter(item, filterKey) {
+  if (filterKey === 'ALL') return true;
+  if (filterKey === 'LITURGY') return LITURGY_TYPES.has(item.type);
+  return item.type === filterKey;
+}
+
+// ── Create Notification Modal (admin only) ───────────────────────────────────
+const NOTIF_TYPES = [
+  { key: 'GENERAL',   label: 'General',   icon: 'megaphone-outline' },
+  { key: 'FEAST',     label: 'Feast Day', icon: 'flame' },
+  { key: 'FUNERAL',   label: 'Funeral',   icon: 'flower-outline' },
+  { key: 'EMERGENCY', label: 'Emergency', icon: 'warning-outline' },
+];
+
+function CreateNotificationModal({ visible, onClose, onCreated, t }) {
+  const [title,   setTitle]   = useState('');
+  const [message, setMessage] = useState('');
+  const [type,    setType]    = useState('GENERAL');
+  const [saving,  setSaving]  = useState(false);
+
+  const reset = () => { setTitle(''); setMessage(''); setType('GENERAL'); };
+
+  const handleClose = () => { reset(); onClose(); };
+
+  const send = async () => {
+    if (!title.trim()) { Alert.alert('Required', 'Please enter a title.'); return; }
+    if (!message.trim()) { Alert.alert('Required', 'Please enter a message.'); return; }
+    setSaving(true);
+    try {
+      await api.createNotification({ title: title.trim(), message: message.trim(), type });
+      reset();
+      onCreated();
+      onClose();
+    } catch (e) {
+      Alert.alert('Could not send', e.message || 'Something went wrong.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={handleClose}>
+      <View style={cnStyles.backdrop}>
+        <View style={cnStyles.sheet}>
+          <View style={cnStyles.header}>
+            <Text style={cnStyles.title}>New Notification</Text>
+            <TouchableOpacity onPress={handleClose} hitSlop={8}>
+              <Ionicons name="close" size={22} color={colors.inkSoft} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Type selector */}
+          <Text style={cnStyles.label}>Type</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
+            <View style={cnStyles.typeRow}>
+              {NOTIF_TYPES.map((nt) => (
+                <TouchableOpacity
+                  key={nt.key}
+                  style={[cnStyles.typeChip, type === nt.key && { backgroundColor: t.primary, borderColor: t.primary }]}
+                  onPress={() => setType(nt.key)}
+                >
+                  <Ionicons name={nt.icon} size={14} color={type === nt.key ? colors.white : colors.inkSoft} />
+                  <Text style={[cnStyles.typeChipText, type === nt.key && { color: colors.white }]}>{nt.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+
+          <Text style={cnStyles.label}>Title</Text>
+          <TextInput
+            style={cnStyles.input}
+            placeholder="Notification title"
+            placeholderTextColor={colors.inkSoft}
+            value={title}
+            onChangeText={setTitle}
+            maxLength={100}
+          />
+
+          <Text style={cnStyles.label}>Message</Text>
+          <TextInput
+            style={[cnStyles.input, cnStyles.inputMulti]}
+            placeholder="Write your message here…"
+            placeholderTextColor={colors.inkSoft}
+            value={message}
+            onChangeText={setMessage}
+            multiline
+            numberOfLines={4}
+            textAlignVertical="top"
+          />
+
+          <TouchableOpacity
+            style={[cnStyles.sendBtn, { backgroundColor: t.primary }, (saving || !title.trim() || !message.trim()) && cnStyles.sendBtnDisabled]}
+            onPress={send}
+            disabled={saving || !title.trim() || !message.trim()}
+          >
+            {saving
+              ? <ActivityIndicator size="small" color={colors.white} />
+              : <><Ionicons name="send" size={16} color={colors.white} /><Text style={cnStyles.sendBtnText}>Send to all members</Text></>
+            }
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function relativeTime(iso) {
   if (!iso) return '';
   const diff = Date.now() - new Date(iso).getTime();
@@ -45,13 +164,17 @@ export default function NotificationsScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [busy,    setBusy]    = useState(false);   // spinner for bulk actions
 
+  // ── Filter tab ─────────────────────────────────────────────────────────────
+  const [filterTab, setFilterTab] = useState('ALL');
+
   // ── Selection mode ─────────────────────────────────────────────────────────
   const [selectMode, setSelectMode] = useState(false);
   const [selected,   setSelected]   = useState(new Set()); // Set of notification IDs
 
   // ── Modals ─────────────────────────────────────────────────────────────────
-  const [sendWishTarget, setSendWishTarget] = useState(null);
-  const [activeWish,     setActiveWish]     = useState(null);
+  const [sendWishTarget,   setSendWishTarget]   = useState(null);
+  const [activeWish,       setActiveWish]       = useState(null);
+  const [createModalOpen,  setCreateModalOpen]  = useState(false);
 
   const channelRef = useRef(null);
 
@@ -73,8 +196,14 @@ export default function NotificationsScreen({ navigation }) {
   }, [navigation, load]);
 
   useEffect(() => {
+    // Remove any stale channel before re-subscribing to avoid duplicates on
+    // screen re-mount (navigate away → navigate back).
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
     channelRef.current = supabase
-      .channel('notifications-screen')
+      .channel(`notifications-screen-${Date.now()}`)
       .on('postgres_changes',
           { event: '*', schema: 'public', table: 'notifications' },
           () => load())
@@ -99,10 +228,11 @@ export default function NotificationsScreen({ navigation }) {
     });
   };
 
-  // Select / deselect all
-  const allSelected = list.length > 0 && selected.size === list.length;
+  // Select / deselect all — scoped to visible (filtered) items
+  const filteredList = list.filter((n) => matchesFilter(n, filterTab));
+  const allSelected = filteredList.length > 0 && filteredList.every((n) => selected.has(n.id));
   const toggleSelectAll = () => {
-    setSelected(allSelected ? new Set() : new Set(list.map((n) => n.id)));
+    setSelected(allSelected ? new Set() : new Set(filteredList.map((n) => n.id)));
   };
 
   const unreadCount    = list.filter((n) => !n.read).length;
@@ -358,6 +488,11 @@ export default function NotificationsScreen({ navigation }) {
         </TouchableOpacity>
       )}
       {isAdmin && (
+        <TouchableOpacity style={styles.headerBtn} onPress={() => setCreateModalOpen(true)} hitSlop={8}>
+          <Ionicons name="add-circle-outline" size={21} color={colors.white} />
+        </TouchableOpacity>
+      )}
+      {isAdmin && (
         <TouchableOpacity style={styles.headerBtn} onPress={handleClearAll} hitSlop={8} disabled={busy}>
           {busy
             ? <ActivityIndicator size="small" color={colors.white} />
@@ -377,18 +512,41 @@ export default function NotificationsScreen({ navigation }) {
     <View style={styles.flex}>
       <ScreenHeader title={selectMode ? `Select notifications` : 'Notifications'} navigation={navigation} right={headerRight} />
 
+      {/* ── Filter tabs ── */}
+      {!selectMode && (
+        <View style={styles.filterBar}>
+          {FILTER_TABS.map((ft) => {
+            const tabUnread = ft.key === 'ALL'
+              ? unreadCount
+              : list.filter((n) => matchesFilter(n, ft.key) && !n.read).length;
+            return (
+              <TouchableOpacity
+                key={ft.key}
+                style={[styles.filterTab, filterTab === ft.key && { backgroundColor: t.primary, borderColor: t.primary }]}
+                onPress={() => { setFilterTab(ft.key); exitSelect(); }}
+              >
+                <Text style={[styles.filterTabText, filterTab === ft.key && { color: colors.white }]}>{ft.label}</Text>
+                {tabUnread > 0 && (
+                  <View style={[styles.filterTabDot, filterTab === ft.key ? { backgroundColor: t.secondary } : { backgroundColor: t.primary }]} />
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
       {selectMode && (
         <View style={[styles.selectBar, { backgroundColor: t.primaryLight }]}>
           <Text style={[styles.selectBarText, { color: t.primary }]}>
             {selectedCount === 0
               ? 'Tap to select — long-press to start'
-              : `${selectedCount} of ${list.length} selected`}
+              : `${selectedCount} of ${filteredList.length} selected`}
           </Text>
         </View>
       )}
 
       <FlatList
-        data={list}
+        data={filteredList}
         keyExtractor={(n) => n.id}
         contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
         refreshing={loading}
@@ -400,11 +558,18 @@ export default function NotificationsScreen({ navigation }) {
             <View style={styles.emptyWrap}>
               <Ionicons name="notifications-off-outline" size={40} color={colors.inkSoft} />
               <Text style={styles.empty}>
-                {loadError ?? 'No notifications yet.'}
+                {loadError ?? (filterTab !== 'ALL' ? `No ${FILTER_TABS.find(f=>f.key===filterTab)?.label} notifications.` : 'No notifications yet.')}
               </Text>
             </View>
           ) : null
         }
+      />
+
+      <CreateNotificationModal
+        visible={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onCreated={load}
+        t={t}
       />
 
       <SendWishModal
@@ -436,6 +601,19 @@ export default function NotificationsScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.stone },
+
+  // Filter tabs bar
+  filterBar: {
+    flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 8, gap: 6,
+    backgroundColor: colors.white, borderBottomWidth: 1, borderBottomColor: colors.divider,
+  },
+  filterTab: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill,
+    backgroundColor: colors.stone, borderWidth: 1, borderColor: colors.divider,
+  },
+  filterTabText: { fontFamily: fonts.bodyMedium, fontSize: 12, color: colors.inkSoft },
+  filterTabDot:  { width: 7, height: 7, borderRadius: 4 },
 
   // Header actions
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
@@ -492,4 +670,36 @@ const styles = StyleSheet.create({
 
   emptyWrap: { alignItems: 'center', paddingTop: 60, gap: 8 },
   empty:     { fontFamily: fonts.bodySemi, fontSize: 14, color: colors.inkSoft },
+});
+
+// ── Create Notification Modal styles ─────────────────────────────────────────
+const cnStyles = StyleSheet.create({
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    padding: 20, paddingBottom: 36,
+  },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  title: { fontFamily: fonts.bodySemi, fontSize: 16, color: colors.ink },
+  label: { fontFamily: fonts.bodyMedium, fontSize: 12, color: colors.inkSoft, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.4 },
+  typeRow: { flexDirection: 'row', gap: 8 },
+  typeChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: radius.pill, borderWidth: 1, borderColor: colors.divider, backgroundColor: colors.stone,
+  },
+  typeChipText: { fontFamily: fonts.bodyMedium, fontSize: 12.5, color: colors.inkSoft },
+  input: {
+    backgroundColor: colors.stone, borderRadius: radius.sm, borderWidth: 1,
+    borderColor: colors.divider, paddingHorizontal: 12, paddingVertical: 11,
+    fontFamily: fonts.body, fontSize: 14, color: colors.ink, marginBottom: 14,
+  },
+  inputMulti: { minHeight: 90, textAlignVertical: 'top' },
+  sendBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, borderRadius: radius.sm, paddingVertical: 14, marginTop: 4,
+  },
+  sendBtnDisabled: { opacity: 0.5 },
+  sendBtnText: { fontFamily: fonts.bodySemi, fontSize: 15, color: colors.white },
 });

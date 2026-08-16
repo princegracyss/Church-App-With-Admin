@@ -519,6 +519,24 @@ export default function MemberProfileScreen({ route, navigation }) {
           </View>
         )}
 
+        {/* ── Admin-only: Marriages link ── */}
+        {isAdmin && !!memberId && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Ionicons name="heart-outline" size={14} color={colors.inkSoft} />
+              <Text style={styles.sectionTitle}>Marriages</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.card, styles.infoRow]}
+              onPress={() => navigation.navigate('Marriages')}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.linkRowPrimary}>View / manage marriage records</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.inkSoft} />
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* ── Admin-only: Login account linking ── */}
         {isStaffAccount && !!memberId && (
           <View style={styles.section}>

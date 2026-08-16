@@ -196,7 +196,18 @@ export default function FamilyScreen({ navigation, route }) {
 
   return (
     <View style={styles.flex}>
-      <ScreenHeader title={screenTitle} navigation={navigation} />
+      <ScreenHeader
+        title={screenTitle}
+        navigation={navigation}
+        right={isAdmin && paramFamilyId ? (
+          <TouchableOpacity
+            onPress={() => navigation.navigate('EditFamily', { familyId: family.id })}
+            hitSlop={10}
+          >
+            <Ionicons name="create-outline" size={20} color={t.secondary} />
+          </TouchableOpacity>
+        ) : undefined}
+      />
 
       <ScrollView
         contentContainerStyle={styles.scroll}

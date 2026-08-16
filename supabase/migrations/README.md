@@ -44,6 +44,16 @@ Never re-run a migration that has already been applied.
 | `026_member_family_self_read.sql` | `families_member_select` + `members_own_family_select` RLS policies — member can read their own family and its members even when `profiles.member_id` link is missing | ✅ Yes |
 | `027_guest_photo_upload.sql` | Anon storage policies for `member-photos` bucket + `guest_update_member_photo()` RPC — allows guest (no Supabase session) members to upload their own profile photo | ✅ Yes |
 | `028_fix_circular_rls.sql` | Adds `my_member_id()` security-definer function; rewrites `members_self_select`, `members_own_family_select`, `families_member_select`, `members_self_update` to use it — fixes circular RLS that broke `currentProfile()` for admin users | ✅ Yes |
+| `029_fix_remaining_circular_rls.sql` | Further circular RLS fixes | ✅ Yes |
+| `030_birthday_rpc_row_security.sql` | `get_calendar_birthdays` set row_security=off | ✅ Yes |
+| `031_fix_dismiss_notifications.sql` | Dismiss fix | ✅ Yes |
+| `032_get_my_notifications_rpc.sql` | Server-side notification filtering RPC | ✅ Yes |
+| `033_get_members_by_bcc_rpc.sql` | BCC member query (OR across member+family BCC columns) | ✅ Yes |
+| `034_get_push_tokens_for_bcc_rpc.sql` | BCC push token query | ✅ Yes |
+| `035_scope_bcc_unit_notifications.sql` | BCC-scoped notification targeting | ✅ Yes |
+| `036_liturgy_rpc_and_cert_forwarded.sql` | `get_my_liturgy_assignments()` server-side RPC + `forwarded_to` column on `certificate_requests` | ✅ Yes |
+| `037_audit_log_triggers.sql` | DB triggers on `members`, `families`, `profiles` writing to `audit_logs` on every INSERT/UPDATE/DELETE | ✅ Yes |
+| `038_marriages_rls.sql` | RLS policies for `marriages` table (admin write + authenticated read) | ✅ Yes |
 
 ## Adding a new migration
 

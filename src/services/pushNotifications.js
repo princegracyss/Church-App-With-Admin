@@ -121,6 +121,10 @@ export async function registerForPushNotifications(userId = null) {
 }
 
 // ── Remove token on logout ────────────────────────────────────────────────────
+// Deletes the push_tokens row for THIS device's token regardless of whether
+// user_id is null or set — both cases are covered by .eq('token', token).
+// This closes the gap where tokens registered before user_id was saved were
+// never cleaned up on subsequent logouts.
 export async function unregisterPushToken() {
   if (!N) return;
   try {
@@ -132,6 +136,7 @@ export async function unregisterPushToken() {
       projectId ? { projectId } : undefined,
     ).catch(() => null);
     if (tokenData?.data) {
+      // Delete by token value — covers both user_id=<uid> and user_id=null rows.
       await supabase.from('push_tokens').delete().eq('token', tokenData.data).catch(() => {});
     }
   } catch (_) {}
